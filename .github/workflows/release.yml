@@ -1,0 +1,70 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag matches manifest versions
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Tag version: $VERSION"
+
+          PKG_VERSION=$(jq -r '.version' package.json)
+          if [ "$PKG_VERSION" != "$VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match tag ($VERSION)"
+            exit 1
+          fi
+
+          CARGO_VERSION=$(sed -n '/^\[package\]/,/^\[/{ s/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p; }' src-tauri/Cargo.toml | head -n1)
+          if [ "$CARGO_VERSION" != "$VERSION" ]; then
+            echo "::error::src-tauri/Cargo.toml [package] version ($CARGO_VERSION) does not match tag ($VERSION)"
+            exit 1
+          fi
+
+          TAURI_VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          if [ "$TAURI_VERSION" != "$VERSION" ]; then
+            echo "::error::src-tauri/tauri.conf.json version ($TAURI_VERSION) does not match tag ($VERSION)"
+            exit 1
+          fi
+
+          echo "All manifest versions match $VERSION"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: yap-box ${{ github.ref_name }}
+          releaseBody: |
+            Unsigned macOS arm64 build. Requires Kokoros running locally — see [README](https://github.com/ChristianAlexa/yap-box#prerequisites).
+
+            First launch: right-click the app → Open → Open.
+
+            If blocked on macOS 15+, go to System Settings → Privacy & Security → Open Anyway.
+          releaseDraft: true
+          prerelease: false
+          args: --target aarch64-apple-darwin
+          includeUpdaterJson: false

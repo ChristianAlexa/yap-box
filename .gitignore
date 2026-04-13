@@ -1,0 +1,33 @@
+# deps & build
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# env & secrets
+.env
+.env.local
+.env.*.local
+
+# editors
+.vscode/
+.idea/
+*.swp
+
+# os
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+
+# model/data assets — yap-box uses an external Kokoros server over HTTP,
+# so models should never live in this tree. Ignored defensively.
+src-tauri/checkpoints/
+src-tauri/data/
+*.onnx
+*.gguf
+*.bin
+
+# runtime audio scratch (app writes to /tmp, but just in case)
+*.wav
