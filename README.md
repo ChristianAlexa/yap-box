@@ -12,6 +12,8 @@ Part of the yap family — [yap](https://github.com/ChristianAlexa/yap) is the M
 
 ## Install
 
+> **Requires an Apple Silicon Mac (M1/M2/M3/M4).** yap-box ships an arm64-only binary — Intel Macs are not supported. Check under `About This Mac`; "Chip" should start with "Apple".
+
 1. **Download the latest `.dmg`** from the [Releases page](https://github.com/ChristianAlexa/yap-box/releases). Apple Silicon (arm64) only for now — pick the asset named `yap-box_*_aarch64.dmg`.
 2. **Move `yap-box.app` to `/Applications`.**
 3. **Clear the quarantine flag** so macOS stops blocking the unsigned build. Pick whichever you prefer:
@@ -19,14 +21,14 @@ Part of the yap family — [yap](https://github.com/ChristianAlexa/yap) is the M
    xattr -dr com.apple.quarantine /Applications/yap-box.app
    ```
    Or, without a terminal: right-click `yap-box.app` → **Open** → **Open** in the warning dialog. On macOS 15 (Sequoia) right-click-Open may not bypass Gatekeeper — open **System Settings → Privacy & Security** and click **Open Anyway** next to the blocked-app message.
-4. **Start Kokoros before using yap-box** — see Prerequisites below. yap-box does not bundle Kokoros.
+4. **On first launch, yap-box will prompt you to download the Kokoro-82M TTS model** (~354 MB). No bytes are fetched until you click **Download** in the confirmation dialog. The model is stored at `~/Library/Application Support/com.yapbox.app/models/`. Kokoros itself is bundled with the app — you don't need to install it separately.
 
-## Prerequisites
+## Prerequisites (for building from source)
 
 - macOS (required — audio playback uses `afplay`, a macOS-only binary, with no fallback for Linux/Windows)
 - Node ≥ 20.11
 - Rust ≥ 1.77.2
-- [Kokoros](https://github.com/lucasjinreal/Kokoros) running on `localhost:3000` (`koko openai`)
+- A local [Kokoros](https://github.com/lucasjinreal/Kokoros) build at `src-tauri/binaries/koko-aarch64-apple-darwin` for `npm run dev:tauri` (copy from `~/dev/Kokoros/target/release/koko` if you have it locally; CI builds this from a pinned upstream SHA)
 
 ## Development
 
@@ -35,15 +37,11 @@ npm install
 npm run dev:tauri
 ```
 
-## Kokoros binary discovery
+## How Kokoros is bundled
 
-On startup, the Rust backend checks whether Kokoros is already running on `localhost:3000`. If not, it tries to auto-spawn `koko openai`, resolving the binary in this order:
+yap-box ships `koko` as a Tauri sidecar at `src-tauri/binaries/koko-<target-triple>`. On launch, after the model is present, yap-box allocates a random localhost port, spawns the sidecar pointing at the downloaded model files, and waits for `/v1/audio/voices` to answer before enabling the UI. The sidecar is killed on app exit.
 
-1. `$KOKOROS_BINARY` (if set and the path exists)
-2. `~/dev/Kokoros/target/release/koko`
-3. `koko` on `$PATH`
-
-If none of the three resolve, the app logs an error to stderr and continues running — you'll just need to start Kokoros yourself.
+CI builds the sidecar from a pinned upstream commit SHA (see `.github/workflows/release.yml`) and ad-hoc signs it alongside the .app so Gatekeeper only prompts once.
 
 ## Build
 
@@ -63,8 +61,8 @@ Remove the quarantine attribute and try again:
 xattr -dr com.apple.quarantine /Applications/yap-box.app
 ```
 
-**Red banner "Kokoros not running"**
-yap-box talks to a Kokoros server on `localhost:3000`. Either Kokoros isn't running, or it's on a different port. Start it with `koko openai` in a terminal and leave it running. See [Kokoros binary discovery](#kokoros-binary-discovery) for how yap-box finds the binary on startup.
+**"Kokoros failed to start"**
+The bundled sidecar couldn't spawn or the health probe timed out. Check the Console app for logs tagged `[koko]`, or launch yap-box from a terminal (`open /Applications/yap-box.app`) to see stderr. Common causes: model files corrupted mid-download (re-trigger from an empty state by deleting `~/Library/Application Support/com.yapbox.app/models/`), or a Gatekeeper denial on the sidecar (re-run `xattr -dr com.apple.quarantine /Applications/yap-box.app`).
 
 **Voices dropdown is empty or only shows defaults**
 yap-box fetches the live voice list from Kokoros (`/v1/audio/voices`) with a 1.5-second timeout. If Kokoros is slow to start or the endpoint isn't available in your Kokoros version, it falls back to a hardcoded list. Restart Kokoros, then relaunch yap-box.
@@ -74,12 +72,14 @@ yap-box only accepts `.txt` and `.md` files up to 1 MiB. Check the file extensio
 
 ## Third-party components
 
-yap-box is MIT-licensed and depends on software it does not bundle:
+yap-box is MIT-licensed and bundles or downloads the following:
 
-- [Kokoros](https://github.com/lucasjinreal/Kokoros) — Apache License 2.0
-- [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model — Apache License 2.0
+- [Kokoros](https://github.com/lucasjinreal/Kokoros) — Apache License 2.0 — **bundled as a sidecar binary** in the .dmg
+- [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model — Apache License 2.0 — **downloaded on first launch** (with user confirmation) from [`thewh1teagle/kokoro-onnx` releases](https://github.com/thewh1teagle/kokoro-onnx/releases) (a mirror of the model in ONNX format)
 
-Install and run Kokoros yourself per its instructions. yap-box only talks to it over HTTP on `localhost:3000`.
+yap-box communicates with the bundled Kokoros over HTTP on a random localhost port allocated at launch.
+
+See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the full Apache 2.0 license text covering these components.
 
 ## License
 
