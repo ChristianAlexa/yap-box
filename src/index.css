@@ -137,42 +137,82 @@ button:disabled {
   font-size: 13px;
 }
 
-.help {
-  padding: 12px 14px;
-  border: 1px solid #3a2a2a;
-  border-radius: 8px;
-  background: #2a1f1f;
+.model-gate {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.model-card,
+.model-dialog {
+  width: 100%;
+  max-width: 420px;
+  padding: 20px;
+  border: 1px solid #333;
+  border-radius: 10px;
+  background: #222;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 12px;
 }
 
-.help__title {
-  font-size: 13px;
+.model-card__title,
+.model-dialog__title {
+  font-size: 15px;
   font-weight: 600;
-  color: #f87171;
+  color: #ffffff;
 }
 
-.help__body {
-  font-size: 12px;
+.model-card__body,
+.model-dialog__body {
+  font-size: 13px;
   color: #bbb;
   line-height: 1.5;
 }
 
-.help code {
-  padding: 2px 6px;
+.model-card__meta {
+  font-size: 12px;
+  color: #888;
+}
+
+.model-card code,
+.model-dialog code {
+  padding: 1px 5px;
   border-radius: 4px;
   background: #1a1a1a;
   color: #e0e0e0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
+  word-break: break-all;
 }
 
-.help a {
-  color: #4a9eff;
-  text-decoration: none;
+.model-dialog__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
-.help a:hover {
-  text-decoration: underline;
+.button--secondary {
+  background: #333;
+  color: #e0e0e0;
+}
+
+.button--secondary:hover:not(:disabled) {
+  background: #444;
+}
+
+.progress {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: #1a1a1a;
+  overflow: hidden;
+}
+
+.progress__bar {
+  height: 100%;
+  background: #4a9eff;
+  transition: width 0.2s ease;
 }

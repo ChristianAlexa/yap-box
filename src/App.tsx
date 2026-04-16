@@ -1,21 +1,85 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { ModelDownload } from './components/ModelDownload'
 
 interface SpeakResult {
   duration_ms: number
   char_count: number
 }
 
+interface ModelStatus {
+  present: boolean
+  onnx_bytes: number | null
+  voices_bytes: number | null
+}
+
+type Gate =
+  | { kind: 'loading' }
+  | { kind: 'need-model' }
+  | { kind: 'starting' }
+  | { kind: 'ready' }
+  | { kind: 'engine-error'; message: string }
+
 function App() {
+  const [gate, setGate] = useState<Gate>({ kind: 'loading' })
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [kokorosUp, setKokorosUp] = useState<boolean | null>(null)
   const [voices, setVoices] = useState<string[]>([])
   const [selectedVoice, setSelectedVoice] = useState<string>(
     () => localStorage.getItem('yap-box-voice') ?? 'af_heart',
   )
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const status = await invoke<ModelStatus>('model_status')
+        if (cancelled) return
+        if (!status.present) {
+          setGate({ kind: 'need-model' })
+        } else {
+          setGate({ kind: 'starting' })
+          await invoke('start_kokoros')
+        }
+      } catch (err) {
+        if (!cancelled) setGate({ kind: 'engine-error', message: `${err}` })
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    const readyP = listen<{ port: number }>('kokoros-ready', () => {
+      setGate({ kind: 'ready' })
+    })
+    const errP = listen<{ message: string }>('kokoros-error', (e) => {
+      setGate({ kind: 'engine-error', message: e.payload.message })
+    })
+    return () => {
+      readyP.then((fn) => fn())
+      errP.then((fn) => fn())
+    }
+  }, [])
+
+  useEffect(() => {
+    if (gate.kind !== 'ready') return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const list = await invoke<string[]>('list_voices')
+        if (!cancelled) setVoices(list)
+      } catch {
+        // keep select empty-ish
+      }
+    })()
+    return () => { cancelled = true }
+  }, [gate.kind])
+
+  useEffect(() => {
+    localStorage.setItem('yap-box-voice', selectedVoice)
+  }, [selectedVoice])
 
   useEffect(() => {
     const unlisten = listen<{ paths: string[] }>('tauri://drag-drop', async (event) => {
@@ -32,46 +96,6 @@ function App() {
     return () => { unlisten.then(fn => fn()) }
   }, [])
 
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const list = await invoke<string[]>('list_voices')
-        if (!cancelled) setVoices(list)
-      } catch {
-        // keep select empty-ish; user can still press Yap with the default voice
-      }
-    })()
-    return () => { cancelled = true }
-  }, [])
-
-  useEffect(() => {
-    localStorage.setItem('yap-box-voice', selectedVoice)
-  }, [selectedVoice])
-
-  // One check on mount to seed the indicator.
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      const up = await invoke<boolean>('kokoros_reachable')
-      if (!cancelled) setKokorosUp(up)
-    })()
-    return () => { cancelled = true }
-  }, [])
-
-  // Only poll while Kokoros is known-down, so the help banner disappears
-  // promptly after the user starts `koko openai`. No polling once it's up —
-  // speak() calls update status as a side effect.
-  useEffect(() => {
-    if (kokorosUp !== false) return
-    let cancelled = false
-    const id = setInterval(async () => {
-      const up = await invoke<boolean>('kokoros_reachable')
-      if (!cancelled) setKokorosUp(up)
-    }, 3000)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [kokorosUp])
-
   async function handleYap() {
     if (!text.trim() || speaking) return
     setSpeaking(true)
@@ -79,14 +103,10 @@ function App() {
     try {
       const result = await invoke<SpeakResult>('speak', { text, voice: selectedVoice })
       console.log(`Spoke ${result.char_count} chars in ${result.duration_ms}ms`)
-      setKokorosUp(true)
     } catch (err) {
       const msg = `${err}`
-      // User-initiated stop: afplay killed via SIGTERM reports exit code
-      // Some(15) or signal-based termination. Swallow silently.
       const looksStopped = msg.includes('Some(15)') || msg.includes('-15') || msg.includes('None')
       if (!looksStopped) setError(msg)
-      if (msg.toLowerCase().includes('unreachable')) setKokorosUp(false)
     } finally {
       setSpeaking(false)
     }
@@ -96,14 +116,74 @@ function App() {
     try {
       await invoke('stop')
     } catch {
-      // best-effort: nothing to surface
+      // best-effort
     }
   }
 
-  const statusLabel =
-    kokorosUp === null ? 'Checking Kokoros...' : kokorosUp ? 'Kokoros connected' : 'Kokoros not running'
-  const statusClass =
-    kokorosUp === null ? 'status status--unknown' : kokorosUp ? 'status status--up' : 'status status--down'
+  const handleModelReady = useCallback(async () => {
+    setGate({ kind: 'starting' })
+    try {
+      await invoke('start_kokoros')
+    } catch (err) {
+      setGate({ kind: 'engine-error', message: `${err}` })
+    }
+  }, [])
+
+  if (gate.kind === 'loading') {
+    return (
+      <div className="container">
+        <div className="model-gate">
+          <p className="model-card__meta">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (gate.kind === 'need-model') {
+    return (
+      <div className="container">
+        <ModelDownload onComplete={handleModelReady} />
+      </div>
+    )
+  }
+
+  if (gate.kind === 'starting') {
+    return (
+      <div className="container">
+        <div className="model-gate">
+          <div className="model-card">
+            <h2 className="model-card__title">Starting Kokoros...</h2>
+            <p className="model-card__meta">First launch may take a few seconds.</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (gate.kind === 'engine-error') {
+    return (
+      <div className="container">
+        <div className="model-gate">
+          <div className="model-card">
+            <h2 className="model-card__title">Kokoros failed to start</h2>
+            <p className="error">{gate.message}</p>
+            <button
+              onClick={async () => {
+                setGate({ kind: 'starting' })
+                try {
+                  await invoke('start_kokoros')
+                } catch (err) {
+                  setGate({ kind: 'engine-error', message: `${err}` })
+                }
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="container">
@@ -120,39 +200,30 @@ function App() {
               <option key={v} value={v}>{v}</option>
             ))}
           </select>
-          <div className={statusClass} title={statusLabel}>
+          <div className="status status--up" title="Kokoros connected">
             <span className="status__dot" />
-            <span className="status__label">{statusLabel}</span>
+            <span className="status__label">Kokoros connected</span>
           </div>
         </div>
       </header>
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && e.metaKey) {
+            e.preventDefault()
+            handleYap()
+          }
+        }}
         placeholder="Paste text here or drag a file onto this window..."
         rows={12}
       />
       {speaking ? (
         <button onClick={handleStop} className="button--stop">Stop</button>
       ) : (
-        <button onClick={handleYap} disabled={!text.trim() || kokorosUp === false}>
+        <button onClick={handleYap} disabled={!text.trim()}>
           Yap
         </button>
-      )}
-      {kokorosUp === false && (
-        <div className="help">
-          <p className="help__title">Kokoros isn't running.</p>
-          <p className="help__body">
-            Start it in a terminal: <code>koko openai</code>
-          </p>
-          <p className="help__body">
-            Don't have it installed? See the{' '}
-            <a href="https://github.com/lucasjinreal/Kokoros" target="_blank" rel="noreferrer">
-              Kokoros setup guide
-            </a>
-            .
-          </p>
-        </div>
       )}
       {error && <p className="error">{error}</p>}
     </div>

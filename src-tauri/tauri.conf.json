@@ -11,11 +11,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app"],
+    "targets": ["app"],
     "category": "public.app-category.utilities",
     "copyright": "Copyright © 2026 Christian Alexa",
     "macOS": { "minimumSystemVersion": "11.0" },
-    "icon": ["icons/icon.icns"]
+    "icon": ["icons/icon.icns"],
+    "externalBin": ["binaries/koko"]
   },
   "app": {
     "windows": [
