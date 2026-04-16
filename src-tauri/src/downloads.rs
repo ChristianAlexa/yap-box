@@ -17,8 +17,8 @@ const MODEL_RELEASE_TAG: &str = "model-files-v1.0";
 // MODEL_RELEASE_TAG above. If you bump the tag, update both URLs.
 const ONNX_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
 const VOICES_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
-const ONNX_EXPECTED_BYTES: u64 = 325_524_072;
-const VOICES_EXPECTED_BYTES: u64 = 27_877_596;
+const ONNX_EXPECTED_BYTES: u64 = 325_532_387;
+const VOICES_EXPECTED_BYTES: u64 = 28_214_398;
 
 pub struct DownloadState {
     pub cancel: Arc<AtomicBool>,
