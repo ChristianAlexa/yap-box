@@ -13,6 +13,8 @@ use crate::paths;
 // Pinned upstream release — both assets must come from the same tag so their
 // sizes stay stable. Bump deliberately; never use `latest`.
 const MODEL_RELEASE_TAG: &str = "model-files-v1.0";
+// The `model-files-v1.0` path segment in ONNX_URL and VOICES_URL must match
+// MODEL_RELEASE_TAG above. If you bump the tag, update both URLs.
 const ONNX_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
 const VOICES_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
 const ONNX_EXPECTED_BYTES: u64 = 325_524_072;
@@ -60,11 +62,22 @@ struct ErrorPayload {
     cancelled: bool,
 }
 
+// Internal error type returned by download_one/download_both. The emit
+// serializes into ErrorPayload, which is what the frontend listens on.
+enum DownloadError {
+    Cancelled,
+    Failed { file: &'static str, message: String },
+}
+
 pub fn model_status(app: &AppHandle) -> ModelStatus {
     let onnx = std::fs::metadata(paths::onnx_path(app)).ok().map(|m| m.len());
     let voices = std::fs::metadata(paths::voices_path(app)).ok().map(|m| m.len());
+    // A truncated or zero-byte file on disk means a prior download crashed
+    // mid-write; treat it as absent so the UI re-gates to the download flow
+    // rather than handing Kokoros a broken model.
+    let present = onnx == Some(ONNX_EXPECTED_BYTES) && voices == Some(VOICES_EXPECTED_BYTES);
     ModelStatus {
-        present: onnx.is_some() && voices.is_some(),
+        present,
         onnx_bytes: onnx,
         voices_bytes: voices,
     }
@@ -123,17 +136,22 @@ pub async fn download_model(
                     },
                 );
             }
-            Err((file, message, cancelled)) => {
+            Err(err) => {
                 let _ = tokio::fs::remove_file(format!("{}.part", onnx_path.display())).await;
                 let _ = tokio::fs::remove_file(format!("{}.part", voices_path.display())).await;
-                let _ = app_bg.emit(
-                    "model-download-error",
-                    ErrorPayload {
+                let payload = match err {
+                    DownloadError::Cancelled => ErrorPayload {
+                        file: "",
+                        message: "cancelled".into(),
+                        cancelled: true,
+                    },
+                    DownloadError::Failed { file, message } => ErrorPayload {
                         file,
                         message,
-                        cancelled,
+                        cancelled: false,
                     },
-                );
+                };
+                let _ = app_bg.emit("model-download-error", payload);
             }
         }
     });
@@ -146,7 +164,7 @@ async fn download_both(
     cancel: &Arc<AtomicBool>,
     onnx_path: &Path,
     voices_path: &Path,
-) -> Result<(), (&'static str, String, bool)> {
+) -> Result<(), DownloadError> {
     // Each file covers a fraction of the overall 0–100% progress bar, weighted by
     // its size. onnx_span + voices_span == 1.0, and voices_span starts where
     // onnx_span ends.
@@ -191,30 +209,42 @@ async fn download_one(
     expected_bytes: u64,
     overall_base: f32,
     overall_span: f32,
-) -> Result<(), (&'static str, String, bool)> {
+) -> Result<(), DownloadError> {
     let part = PathBuf::from(format!("{}.part", dest.display()));
     let _ = tokio::fs::remove_file(&part).await;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60 * 30))
         .build()
-        .map_err(|e| (file, format!("client build: {e}"), false))?;
+        .map_err(|e| DownloadError::Failed {
+            file,
+            message: format!("client build: {e}"),
+        })?;
 
     let resp = client
         .get(url)
         .send()
         .await
-        .map_err(|e| (file, format!("request: {e}"), false))?;
+        .map_err(|e| DownloadError::Failed {
+            file,
+            message: format!("request: {e}"),
+        })?;
 
     if !resp.status().is_success() {
-        return Err((file, format!("HTTP {}", resp.status()), false));
+        return Err(DownloadError::Failed {
+            file,
+            message: format!("HTTP {}", resp.status()),
+        });
     }
 
     let total = resp.content_length().unwrap_or(expected_bytes);
 
     let mut file_handle = tokio::fs::File::create(&part)
         .await
-        .map_err(|e| (file, format!("create .part: {e}"), false))?;
+        .map_err(|e| DownloadError::Failed {
+            file,
+            message: format!("create .part: {e}"),
+        })?;
 
     let mut stream = resp.bytes_stream();
     let mut downloaded: u64 = 0;
@@ -225,13 +255,19 @@ async fn download_one(
         if cancel.load(Ordering::SeqCst) {
             drop(file_handle);
             let _ = tokio::fs::remove_file(&part).await;
-            return Err((file, "cancelled".into(), true));
+            return Err(DownloadError::Cancelled);
         }
-        let bytes = chunk.map_err(|e| (file, format!("stream: {e}"), false))?;
+        let bytes = chunk.map_err(|e| DownloadError::Failed {
+            file,
+            message: format!("stream: {e}"),
+        })?;
         file_handle
             .write_all(&bytes)
             .await
-            .map_err(|e| (file, format!("write: {e}"), false))?;
+            .map_err(|e| DownloadError::Failed {
+                file,
+                message: format!("write: {e}"),
+            })?;
         downloaded += bytes.len() as u64;
 
         let should_emit = last_emit.elapsed() >= Duration::from_millis(250)
@@ -260,29 +296,37 @@ async fn download_one(
     file_handle
         .flush()
         .await
-        .map_err(|e| (file, format!("flush: {e}"), false))?;
+        .map_err(|e| DownloadError::Failed {
+            file,
+            message: format!("flush: {e}"),
+        })?;
     drop(file_handle);
 
     let final_meta = tokio::fs::metadata(&part)
         .await
-        .map_err(|e| (file, format!("stat .part: {e}"), false))?;
+        .map_err(|e| DownloadError::Failed {
+            file,
+            message: format!("stat .part: {e}"),
+        })?;
     if final_meta.len() != expected_bytes {
         let _ = tokio::fs::remove_file(&part).await;
-        return Err((
+        return Err(DownloadError::Failed {
             file,
-            format!(
+            message: format!(
                 "size mismatch: got {} bytes, expected {} (tag {})",
                 final_meta.len(),
                 expected_bytes,
                 MODEL_RELEASE_TAG
             ),
-            false,
-        ));
+        });
     }
 
     tokio::fs::rename(&part, dest)
         .await
-        .map_err(|e| (file, format!("rename: {e}"), false))?;
+        .map_err(|e| DownloadError::Failed {
+            file,
+            message: format!("rename: {e}"),
+        })?;
 
     let final_pct = ((overall_base + overall_span) * 100.0).min(100.0);
     let _ = app.emit(

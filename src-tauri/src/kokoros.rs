@@ -18,16 +18,6 @@ pub struct StartResult {
     pub port: u16,
 }
 
-#[derive(Serialize, Clone)]
-struct ReadyPayload {
-    port: u16,
-}
-
-#[derive(Serialize, Clone)]
-struct ErrorPayload {
-    message: String,
-}
-
 // Port allocation is technically racy: bind to :0, read assigned port, drop,
 // hand it to koko. For a single-user desktop app this is fine — the window
 // between drop and koko's bind is microseconds and nothing else on the machine
@@ -103,6 +93,12 @@ pub async fn start_kokoros(
                             *guard = None;
                         }
                     }
+                    if let Some(state) = app_log.try_state::<KokorosChild>() {
+                        if let Ok(mut guard) = state.0.lock() {
+                            *guard = None;
+                        }
+                    }
+                    let _ = app_log.emit("kokoros-terminated", payload.code);
                     break;
                 }
                 _ => {}
@@ -110,46 +106,36 @@ pub async fn start_kokoros(
         }
     });
 
-    let app_probe = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let client = match reqwest::Client::builder()
-            .timeout(Duration::from_millis(500))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = app_probe.emit(
-                    "kokoros-error",
-                    ErrorPayload {
-                        message: format!("probe client: {e}"),
-                    },
-                );
-                return;
+    // Await readiness inline: poll /v1/audio/voices until it responds 2xx or
+    // we hit the 30s deadline. Keeps the startup flow single-shot — callers
+    // get Ok only after the sidecar is actually serving.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .map_err(|e| format!("probe client: {e}"))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let url = format!("http://127.0.0.1:{port}/v1/audio/voices");
+    loop {
+        if std::time::Instant::now() > deadline {
+            // Kill the child we spawned; otherwise a retry spawns a second
+            // koko alongside this one and the orphan never gets reaped until
+            // app exit.
+            let child_opt = child_state.0.lock().ok().and_then(|mut g| g.take());
+            if let Some(child) = child_opt {
+                let _ = child.kill();
             }
-        };
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            if std::time::Instant::now() > deadline {
-                let _ = app_probe.emit(
-                    "kokoros-error",
-                    ErrorPayload {
-                        message: "Kokoros failed to become ready within 30s".into(),
-                    },
-                );
-                return;
+            if let Ok(mut guard) = port_state.0.lock() {
+                *guard = None;
             }
-            let url = format!("http://127.0.0.1:{port}/v1/audio/voices");
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().is_success() {
-                    let _ = app_probe.emit("kokoros-ready", ReadyPayload { port });
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            return Err("Kokoros failed to become ready within 30s".into());
         }
-    });
-
-    Ok(StartResult { port })
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                return Ok(StartResult { port });
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 pub fn shutdown(app: &AppHandle) {

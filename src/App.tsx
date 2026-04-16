@@ -6,6 +6,7 @@ import { ModelDownload } from './components/ModelDownload'
 interface SpeakResult {
   duration_ms: number
   char_count: number
+  stopped: boolean
 }
 
 interface ModelStatus {
@@ -42,24 +43,14 @@ function App() {
         } else {
           setGate({ kind: 'starting' })
           await invoke('start_kokoros')
+          if (!cancelled) setGate({ kind: 'ready' })
         }
       } catch (err) {
         if (!cancelled) setGate({ kind: 'engine-error', message: `${err}` })
       }
     })()
-    return () => { cancelled = true }
-  }, [])
-
-  useEffect(() => {
-    const readyP = listen<{ port: number }>('kokoros-ready', () => {
-      setGate({ kind: 'ready' })
-    })
-    const errP = listen<{ message: string }>('kokoros-error', (e) => {
-      setGate({ kind: 'engine-error', message: e.payload.message })
-    })
     return () => {
-      readyP.then((fn) => fn())
-      errP.then((fn) => fn())
+      cancelled = true
     }
   }, [])
 
@@ -74,7 +65,9 @@ function App() {
         // keep select empty-ish
       }
     })()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [gate.kind])
 
   useEffect(() => {
@@ -93,7 +86,21 @@ function App() {
         setError(`Failed to read file: ${err}`)
       }
     })
-    return () => { unlisten.then(fn => fn()) }
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [])
+
+  useEffect(() => {
+    const unlisten = listen<number | null>('kokoros-terminated', (event) => {
+      setGate({
+        kind: 'engine-error',
+        message: `Kokoros exited unexpectedly (code ${event.payload ?? 'unknown'}).`,
+      })
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
   }, [])
 
   async function handleYap() {
@@ -102,11 +109,11 @@ function App() {
     setError(null)
     try {
       const result = await invoke<SpeakResult>('speak', { text, voice: selectedVoice })
-      console.log(`Spoke ${result.char_count} chars in ${result.duration_ms}ms`)
+      if (!result.stopped) {
+        console.log(`Spoke ${result.char_count} chars in ${result.duration_ms}ms`)
+      }
     } catch (err) {
-      const msg = `${err}`
-      const looksStopped = msg.includes('Some(15)') || msg.includes('-15') || msg.includes('None')
-      if (!looksStopped) setError(msg)
+      setError(`${err}`)
     } finally {
       setSpeaking(false)
     }
@@ -124,6 +131,7 @@ function App() {
     setGate({ kind: 'starting' })
     try {
       await invoke('start_kokoros')
+      setGate({ kind: 'ready' })
     } catch (err) {
       setGate({ kind: 'engine-error', message: `${err}` })
     }
@@ -172,6 +180,7 @@ function App() {
                 setGate({ kind: 'starting' })
                 try {
                   await invoke('start_kokoros')
+                  setGate({ kind: 'ready' })
                 } catch (err) {
                   setGate({ kind: 'engine-error', message: `${err}` })
                 }
@@ -197,7 +206,9 @@ function App() {
             aria-label="Voice"
           >
             {(voices.length > 0 ? voices : [selectedVoice]).map((v) => (
-              <option key={v} value={v}>{v}</option>
+              <option key={v} value={v}>
+                {v}
+              </option>
             ))}
           </select>
           <div className="status status--up" title="Kokoros connected">
@@ -219,7 +230,9 @@ function App() {
         rows={12}
       />
       {speaking ? (
-        <button onClick={handleStop} className="button--stop">Stop</button>
+        <button onClick={handleStop} className="button--stop">
+          Stop
+        </button>
       ) : (
         <button onClick={handleYap} disabled={!text.trim()}>
           Yap

@@ -4,19 +4,33 @@ mod paths;
 mod strip;
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 
 use downloads::{DownloadState, ModelStatus};
 use kokoros::{KokorosChild, KokorosPort, StartResult};
 
-pub struct PlaybackPid(pub Mutex<Option<u32>>);
+pub struct Playback {
+    pub pid: Mutex<Option<u32>>,
+    pub stopped: AtomicBool,
+}
+
+impl Playback {
+    fn new() -> Self {
+        Self {
+            pid: Mutex::new(None),
+            stopped: AtomicBool::new(false),
+        }
+    }
+}
 
 #[derive(Serialize)]
 pub struct SpeakResult {
     duration_ms: u64,
     char_count: usize,
+    stopped: bool,
 }
 
 fn kokoros_base_url(port_state: &State<'_, KokorosPort>) -> Option<String> {
@@ -32,7 +46,7 @@ fn kokoros_base_url(port_state: &State<'_, KokorosPort>) -> Option<String> {
 async fn speak(
     text: String,
     voice: Option<String>,
-    state: State<'_, PlaybackPid>,
+    state: State<'_, Playback>,
     port_state: State<'_, KokorosPort>,
 ) -> Result<SpeakResult, String> {
     let input = strip::strip_markdown(&text);
@@ -40,7 +54,12 @@ async fn speak(
     let chosen_voice = voice.unwrap_or_else(|| "af_heart".into());
     let base = kokoros_base_url(&port_state).ok_or("Kokoros not started")?;
 
-    let client = reqwest::Client::new();
+    state.stopped.store(false, Ordering::SeqCst);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("http client build: {e}"))?;
     let resp = client
         .post(format!("{base}/v1/audio/speech"))
         .json(&serde_json::json!({
@@ -64,21 +83,24 @@ async fn speak(
         .map_err(|e| format!("Failed to write temp file: {e}"))?;
 
     let start = Instant::now();
-    let mut child = tokio::process::Command::new("afplay")
-        .arg(&temp_path)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn afplay: {e}"))?;
+    let mut child = match tokio::process::Command::new("afplay").arg(&temp_path).spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(format!("Failed to spawn afplay: {e}"));
+        }
+    };
 
     let pid = child.id();
     if let Some(pid) = pid {
-        if let Ok(mut guard) = state.0.lock() {
+        if let Ok(mut guard) = state.pid.lock() {
             *guard = Some(pid);
         }
     }
 
     let wait_result = child.wait().await;
 
-    if let Ok(mut guard) = state.0.lock() {
+    if let Ok(mut guard) = state.pid.lock() {
         *guard = None;
     }
 
@@ -86,21 +108,27 @@ async fn speak(
 
     let status = wait_result.map_err(|e| format!("Failed to wait for afplay: {e}"))?;
     let duration_ms = start.elapsed().as_millis() as u64;
+    let was_stopped = state.stopped.swap(false, Ordering::SeqCst);
 
-    if !status.success() {
+    if !status.success() && !was_stopped {
         return Err(format!("afplay exited with {:?}", status.code()));
     }
 
     Ok(SpeakResult {
         duration_ms,
         char_count,
+        stopped: was_stopped,
     })
 }
 
 #[tauri::command]
-async fn stop(state: State<'_, PlaybackPid>) -> Result<(), String> {
-    let pid_opt = state.0.lock().ok().and_then(|g| *g);
+async fn stop(state: State<'_, Playback>) -> Result<(), String> {
+    let pid_opt = state.pid.lock().ok().and_then(|g| *g);
     if let Some(pid) = pid_opt {
+        // Set stopped before SIGTERM so the speak() task, which may wake up
+        // the instant afplay dies, sees the flag and reports a clean stop
+        // rather than an error.
+        state.stopped.store(true, Ordering::SeqCst);
         use nix::sys::signal::{kill, Signal};
         use nix::unistd::Pid;
         let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
@@ -200,7 +228,7 @@ async fn start_kokoros(
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(PlaybackPid(Mutex::new(None)))
+        .manage(Playback::new())
         .manage(KokorosChild(Mutex::new(None)))
         .manage(KokorosPort(Mutex::new(None)))
         .manage(DownloadState::new())

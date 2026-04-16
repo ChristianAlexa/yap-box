@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
-fn r(pattern: &'static str) -> &'static Regex {
+fn cached_re(pattern: &'static str) -> &'static Regex {
     static CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<&'static str, &'static Regex>>> =
         OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -17,35 +17,35 @@ fn r(pattern: &'static str) -> &'static Regex {
 pub fn strip_markdown(text: &str) -> String {
     let mut out: String = text.to_string();
 
-    out = r(r"(?s)```[^\n]*\n.*?\n[ \t]*```[ \t]*").replace_all(&out, "").into_owned();
-    out = r(r"(?s)~~~[^\n]*\n.*?\n[ \t]*~~~[ \t]*").replace_all(&out, "").into_owned();
+    out = cached_re(r"(?s)```[^\n]*\n.*?\n[ \t]*```[ \t]*").replace_all(&out, "").into_owned();
+    out = cached_re(r"(?s)~~~[^\n]*\n.*?\n[ \t]*~~~[ \t]*").replace_all(&out, "").into_owned();
 
-    out = r(r"(?m)^[ \t]*>[ \t]?").replace_all(&out, "").into_owned();
+    out = cached_re(r"(?m)^[ \t]*>[ \t]?").replace_all(&out, "").into_owned();
 
-    out = r(r"(?m)^[ \t]*[-*_]{3,}[ \t]*$").replace_all(&out, "").into_owned();
+    out = cached_re(r"(?m)^[ \t]*[-*_]{3,}[ \t]*$").replace_all(&out, "").into_owned();
 
-    out = r(r"(?m)^[ \t]*#{1,6}[ \t]+").replace_all(&out, "").into_owned();
+    out = cached_re(r"(?m)^[ \t]*#{1,6}[ \t]+").replace_all(&out, "").into_owned();
 
-    out = r(r"!\[([^\]]*)\]\([^)]*\)").replace_all(&out, "$1").into_owned();
-    out = r(r"\[([^\]]*)\]\([^)]*\)").replace_all(&out, "$1").into_owned();
+    out = cached_re(r"!\[([^\]]*)\]\([^)]*\)").replace_all(&out, "$1").into_owned();
+    out = cached_re(r"\[([^\]]*)\]\([^)]*\)").replace_all(&out, "$1").into_owned();
 
-    out = r(r"\*\*\*([^*\n]+?)\*\*\*").replace_all(&out, "$1").into_owned();
-    out = r(r"___([^_\n]+?)___").replace_all(&out, "$1").into_owned();
-    out = r(r"\*\*([^*\n]+?)\*\*").replace_all(&out, "$1").into_owned();
-    out = r(r"__([^_\n]+?)__").replace_all(&out, "$1").into_owned();
-    out = r(r"\*([^*\n]+?)\*").replace_all(&out, "$1").into_owned();
+    out = cached_re(r"\*\*\*([^*\n]+?)\*\*\*").replace_all(&out, "$1").into_owned();
+    out = cached_re(r"___([^_\n]+?)___").replace_all(&out, "$1").into_owned();
+    out = cached_re(r"\*\*([^*\n]+?)\*\*").replace_all(&out, "$1").into_owned();
+    out = cached_re(r"__([^_\n]+?)__").replace_all(&out, "$1").into_owned();
+    out = cached_re(r"\*([^*\n]+?)\*").replace_all(&out, "$1").into_owned();
 
     // Underscore italic: only at word boundaries so snake_case survives.
     // JS used lookahead `(?=\W|$)`; regex crate has no lookahead, so we
     // capture the trailing non-word char (or end) and re-emit it.
-    out = r(r"(^|\W)_([^_\n]+?)_(\W|$)").replace_all(&out, "$1$2$3").into_owned();
+    out = cached_re(r"(^|\W)_([^_\n]+?)_(\W|$)").replace_all(&out, "$1$2$3").into_owned();
 
-    out = r(r"`([^`]*)`").replace_all(&out, "$1").into_owned();
+    out = cached_re(r"`([^`]*)`").replace_all(&out, "$1").into_owned();
 
-    out = r(r"(?m)^[ \t]*[-*+][ \t]+").replace_all(&out, "").into_owned();
-    out = r(r"(?m)^[ \t]*\d+\.[ \t]+").replace_all(&out, "").into_owned();
+    out = cached_re(r"(?m)^[ \t]*[-*+][ \t]+").replace_all(&out, "").into_owned();
+    out = cached_re(r"(?m)^[ \t]*\d+\.[ \t]+").replace_all(&out, "").into_owned();
 
-    out = r(r"\n{3,}").replace_all(&out, "\n\n").into_owned();
+    out = cached_re(r"\n{3,}").replace_all(&out, "\n\n").into_owned();
 
     out.trim().to_string()
 }
