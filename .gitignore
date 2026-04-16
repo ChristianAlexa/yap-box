@@ -32,3 +32,4 @@ src-tauri/data/
 
 # runtime audio scratch (app writes to /tmp, but just in case)
 *.wav
+.claude
