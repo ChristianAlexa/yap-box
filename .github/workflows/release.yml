@@ -66,6 +66,11 @@ jobs:
 
       - name: Build Kokoros sidecar (arm64)
         working-directory: kokoros-src
+        # CMake 4 removed implicit support for cmake_minimum_required < 3.5.
+        # libopus (bundled via audiopus_sys) still declares the old minimum,
+        # so we opt back in for the whole build. Remove once upstream bumps.
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: '3.5'
         run: cargo build --release --target aarch64-apple-darwin --bin koko
 
       - name: Stage + ad-hoc sign sidecar
