@@ -76,10 +76,15 @@ yap-box is MIT-licensed and bundles or downloads the following:
 
 - [Kokoros](https://github.com/lucasjinreal/Kokoros) — Apache License 2.0 — **bundled as a sidecar binary** in the .dmg
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model — Apache License 2.0 — **downloaded on first launch** (with user confirmation) from [`thewh1teagle/kokoro-onnx` releases](https://github.com/thewh1teagle/kokoro-onnx/releases) (a mirror of the model in ONNX format)
+- [espeak-ng](https://github.com/espeak-ng/espeak-ng) — GPL v3 — **statically linked into `koko`** and its phoneme data files bundled under `Contents/Resources/` (required for Kokoros to convert text into phonemes)
 
 yap-box communicates with the bundled Kokoros over HTTP on a random localhost port allocated at launch.
 
-See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the full Apache 2.0 license text covering these components.
+See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the full license texts (Apache 2.0 and GPL v3) covering these components.
+
+## Privacy
+
+yap-box runs entirely on your machine — no analytics, telemetry, or remote servers. See [PRIVACY.md](PRIVACY.md) for details.
 
 ## License
 
