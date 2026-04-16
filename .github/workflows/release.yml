@@ -3,6 +3,11 @@ on:
   push:
     tags: ['v*']
 
+env:
+  # Pin Kokoros by commit SHA — tags are mutable. Bump this deliberately when
+  # upstream has a fix we need.
+  KOKOROS_SHA: 7089168f0ca2d8e1fcd8e523c9d75d915c6afdff
+
 jobs:
   release:
     runs-on: macos-14
@@ -48,23 +53,80 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            kokoros-src
 
-      - run: npm ci
-
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout Kokoros at pinned SHA
+        uses: actions/checkout@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: yap-box ${{ github.ref_name }}
-          releaseBody: |
-            Unsigned macOS arm64 build. Requires Kokoros running locally — see [README](https://github.com/ChristianAlexa/yap-box#prerequisites).
+          repository: lucasjinreal/Kokoros
+          ref: ${{ env.KOKOROS_SHA }}
+          path: kokoros-src
 
-            First launch: right-click the app → Open → Open.
+      - name: Build Kokoros sidecar (arm64)
+        working-directory: kokoros-src
+        run: cargo build --release --target aarch64-apple-darwin --bin koko
 
-            If blocked on macOS 15+, go to System Settings → Privacy & Security → Open Anyway.
-          releaseDraft: true
+      - name: Stage + ad-hoc sign sidecar
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          cp kokoros-src/target/aarch64-apple-darwin/release/koko \
+             src-tauri/binaries/koko-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/koko-aarch64-apple-darwin
+          codesign --sign - --force --timestamp=none \
+            src-tauri/binaries/koko-aarch64-apple-darwin
+          codesign --verify --verbose src-tauri/binaries/koko-aarch64-apple-darwin
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version '^2.10' --locked
+
+      - name: Build .app (without DMG)
+        run: cargo tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Ad-hoc sign .app (deep)
+        run: |
+          set -euo pipefail
+          APP_PATH="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/yap-box.app"
+          codesign --sign - --force --deep --timestamp=none "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Create DMG from signed .app
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP_PATH="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/yap-box.app"
+          DMG_DIR="dist-dmg"
+          DMG_PATH="yap-box_${VERSION}_aarch64.dmg"
+          mkdir -p "$DMG_DIR"
+          cp -R "$APP_PATH" "$DMG_DIR/"
+          ln -s /Applications "$DMG_DIR/Applications"
+          hdiutil create -volname "yap-box" \
+            -srcfolder "$DMG_DIR" \
+            -ov -format UDZO \
+            "$DMG_PATH"
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: yap-box ${{ github.ref_name }}
+          draft: true
           prerelease: false
-          args: --target aarch64-apple-darwin
-          includeUpdaterJson: false
+          body: |
+            Unsigned macOS arm64 build (ad-hoc signed).
+
+            **First launch:** right-click `yap-box.app` → Open → Open.
+            If blocked on macOS 15+: System Settings → Privacy & Security → Open Anyway.
+
+            On first launch the app will prompt you to download the Kokoro-82M TTS model (~354 MB). No bytes are fetched until you confirm.
+          files: |
+            ${{ env.DMG_PATH }}
