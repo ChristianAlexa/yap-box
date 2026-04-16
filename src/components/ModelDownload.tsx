@@ -88,15 +88,11 @@ export function ModelDownload({ onComplete }: Props) {
           <h2 className="model-dialog__title">Download Kokoro model?</h2>
           <p className="model-dialog__body">
             About <strong>354 MB</strong> will be downloaded from GitHub to{' '}
-            <code>~/Library/Application Support/com.yapbox.app/models/</code>.
-            This may take several minutes depending on your connection.
+            <code>~/Library/Application Support/com.yapbox.app/models/</code>. This may take several
+            minutes depending on your connection.
           </p>
           <div className="model-dialog__actions">
-            <button
-              type="button"
-              className="button--secondary"
-              onClick={() => setPhase('idle')}
-            >
+            <button type="button" className="button--secondary" onClick={() => setPhase('idle')}>
               Cancel
             </button>
             <button type="button" onClick={startDownload}>
@@ -119,7 +115,10 @@ export function ModelDownload({ onComplete }: Props) {
             <div className="progress__bar" style={{ width: `${pct}%` }} />
           </div>
           <p className="model-card__meta">
-            {fileLabel} • {progress ? `${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}` : 'Starting...'}
+            {fileLabel} •{' '}
+            {progress
+              ? `${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}`
+              : 'Starting...'}
           </p>
           <button type="button" className="button--secondary" onClick={cancelDownload}>
             Cancel
@@ -159,8 +158,8 @@ export function ModelDownload({ onComplete }: Props) {
       <div className="model-card">
         <h2 className="model-card__title">Kokoro model not installed</h2>
         <p className="model-card__body">
-          yap-box needs the Kokoro-82M TTS model (~354 MB, Apache 2.0) to generate speech.
-          The model will be stored at <code>~/Library/Application Support/com.yapbox.app/models/</code>.
+          yap-box needs the Kokoro-82M TTS model (~354 MB, Apache 2.0) to generate speech. The model
+          will be stored at <code>~/Library/Application Support/com.yapbox.app/models/</code>.
         </p>
         <button type="button" onClick={() => setPhase('confirming')}>
           Download model

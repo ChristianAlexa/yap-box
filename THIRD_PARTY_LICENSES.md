@@ -8,6 +8,8 @@ yap-box bundles and/or downloads third-party software. The following licenses ap
 
 The `koko` sidecar binary shipped inside `yap-box.app` is built from [Kokoros](https://github.com/lucasjinreal/Kokoros) by Lucas Jin, distributed under the Apache License 2.0.
 
+The upstream repository at the pinned SHA (`7089168f0ca2d8e1fcd8e523c9d75d915c6afdff`) does not contain a `NOTICE` file, so there are no §4(d) attribution contents to propagate. Re-verify if the pinned SHA is bumped.
+
 ## Kokoro-82M (runtime download)
 
 The Kokoro-82M TTS model that yap-box downloads on first launch (via user confirmation) is from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), mirrored at [thewh1teagle/kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), distributed under the Apache License 2.0.

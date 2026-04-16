@@ -21,6 +21,8 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
       - run: npm run build
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
