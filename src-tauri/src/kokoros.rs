@@ -1,0 +1,163 @@
+use std::net::TcpListener;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+use tauri_plugin_shell::ShellExt;
+
+use crate::paths;
+
+pub struct KokorosChild(pub Mutex<Option<CommandChild>>);
+
+pub struct KokorosPort(pub Mutex<Option<u16>>);
+
+#[derive(Serialize, Clone)]
+pub struct StartResult {
+    pub port: u16,
+}
+
+#[derive(Serialize, Clone)]
+struct ReadyPayload {
+    port: u16,
+}
+
+#[derive(Serialize, Clone)]
+struct ErrorPayload {
+    message: String,
+}
+
+// Port allocation is technically racy: bind to :0, read assigned port, drop,
+// hand it to koko. For a single-user desktop app this is fine — the window
+// between drop and koko's bind is microseconds and nothing else on the machine
+// is fighting for ephemeral localhost ports.
+fn allocate_port() -> Result<u16, String> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("bind :0: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("local_addr: {e}"))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+pub async fn start_kokoros(
+    app: AppHandle,
+    child_state: State<'_, KokorosChild>,
+    port_state: State<'_, KokorosPort>,
+) -> Result<StartResult, String> {
+    if let Ok(guard) = port_state.0.lock() {
+        if let Some(existing) = *guard {
+            return Ok(StartResult { port: existing });
+        }
+    }
+
+    let onnx = paths::onnx_path(&app);
+    let voices = paths::voices_path(&app);
+    if !onnx.exists() || !voices.exists() {
+        return Err("Model files missing".into());
+    }
+
+    let port = allocate_port()?;
+
+    let sidecar = app
+        .shell()
+        .sidecar("koko")
+        .map_err(|e| format!("sidecar lookup: {e}"))?
+        .args([
+            "-m",
+            &onnx.to_string_lossy(),
+            "-d",
+            &voices.to_string_lossy(),
+            "openai",
+            "--ip",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+        ]);
+
+    let (mut rx, child) = sidecar.spawn().map_err(|e| format!("spawn koko: {e}"))?;
+
+    if let Ok(mut guard) = child_state.0.lock() {
+        *guard = Some(child);
+    }
+    if let Ok(mut guard) = port_state.0.lock() {
+        *guard = Some(port);
+    }
+
+    let app_log = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) => {
+                    eprintln!("[koko] {}", String::from_utf8_lossy(&line));
+                }
+                CommandEvent::Stderr(line) => {
+                    eprintln!("[koko] {}", String::from_utf8_lossy(&line));
+                }
+                CommandEvent::Terminated(payload) => {
+                    eprintln!("[koko] terminated code={:?}", payload.code);
+                    if let Some(state) = app_log.try_state::<KokorosPort>() {
+                        if let Ok(mut guard) = state.0.lock() {
+                            *guard = None;
+                        }
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let app_probe = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app_probe.emit(
+                    "kokoros-error",
+                    ErrorPayload {
+                        message: format!("probe client: {e}"),
+                    },
+                );
+                return;
+            }
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if std::time::Instant::now() > deadline {
+                let _ = app_probe.emit(
+                    "kokoros-error",
+                    ErrorPayload {
+                        message: "Kokoros failed to become ready within 30s".into(),
+                    },
+                );
+                return;
+            }
+            let url = format!("http://127.0.0.1:{port}/v1/audio/voices");
+            if let Ok(resp) = client.get(&url).send().await {
+                if resp.status().is_success() {
+                    let _ = app_probe.emit("kokoros-ready", ReadyPayload { port });
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    });
+
+    Ok(StartResult { port })
+}
+
+pub fn shutdown(app: &AppHandle) {
+    if let Some(state) = app.try_state::<KokorosChild>() {
+        let child_opt = state.0.lock().ok().and_then(|mut g| g.take());
+        if let Some(child) = child_opt {
+            let _ = child.kill();
+            eprintln!("[yap-box] stopped Kokoros sidecar");
+        }
+    }
+}

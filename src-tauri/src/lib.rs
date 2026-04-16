@@ -1,14 +1,17 @@
+mod downloads;
+mod kokoros;
+mod paths;
 mod strip;
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
-use tauri::{Manager, State};
+use tauri::{AppHandle, State};
+
+use downloads::{DownloadState, ModelStatus};
+use kokoros::{KokorosChild, KokorosPort, StartResult};
 
 pub struct PlaybackPid(pub Mutex<Option<u32>>);
-
-pub struct KokorosProcess(pub Mutex<Option<tokio::process::Child>>);
 
 #[derive(Serialize)]
 pub struct SpeakResult {
@@ -16,21 +19,30 @@ pub struct SpeakResult {
     char_count: usize,
 }
 
+fn kokoros_base_url(port_state: &State<'_, KokorosPort>) -> Option<String> {
+    port_state
+        .0
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .map(|p| format!("http://127.0.0.1:{p}"))
+}
+
 #[tauri::command]
 async fn speak(
     text: String,
     voice: Option<String>,
     state: State<'_, PlaybackPid>,
+    port_state: State<'_, KokorosPort>,
 ) -> Result<SpeakResult, String> {
     let input = strip::strip_markdown(&text);
     let char_count = input.len();
     let chosen_voice = voice.unwrap_or_else(|| "af_heart".into());
-    let kokoro_url =
-        std::env::var("KOKORO_URL").unwrap_or_else(|_| "http://localhost:3000".into());
+    let base = kokoros_base_url(&port_state).ok_or("Kokoros not started")?;
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("{kokoro_url}/v1/audio/speech"))
+        .post(format!("{base}/v1/audio/speech"))
         .json(&serde_json::json!({
             "model": "tts-1",
             "voice": chosen_voice,
@@ -101,12 +113,11 @@ struct VoicesResponse {
     voices: Vec<String>,
 }
 
-// Prefers Kokoros' /v1/audio/voices endpoint so the list tracks the installed
-// voicepacks. Falls back to a curated set if Kokoros is unreachable.
 #[tauri::command]
-async fn list_voices() -> Result<Vec<String>, String> {
-    let kokoro_url =
-        std::env::var("KOKORO_URL").unwrap_or_else(|_| "http://localhost:3000".into());
+async fn list_voices(port_state: State<'_, KokorosPort>) -> Result<Vec<String>, String> {
+    let Some(base) = kokoros_base_url(&port_state) else {
+        return Ok(fallback_voices());
+    };
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(1500))
         .build()
@@ -114,11 +125,7 @@ async fn list_voices() -> Result<Vec<String>, String> {
         Ok(c) => c,
         Err(_) => return Ok(fallback_voices()),
     };
-    match client
-        .get(format!("{kokoro_url}/v1/audio/voices"))
-        .send()
-        .await
-    {
+    match client.get(format!("{base}/v1/audio/voices")).send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<VoicesResponse>().await {
             Ok(v) if !v.voices.is_empty() => Ok(v.voices),
             _ => Ok(fallback_voices()),
@@ -162,89 +169,45 @@ async fn read_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to read {path}: {e}"))
 }
 
-async fn is_kokoros_up() -> bool {
-    let kokoro_url =
-        std::env::var("KOKORO_URL").unwrap_or_else(|_| "http://localhost:3000".into());
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    client.get(&kokoro_url).send().await.is_ok()
+#[tauri::command]
+async fn model_status(app: AppHandle) -> ModelStatus {
+    downloads::model_status(&app)
 }
 
 #[tauri::command]
-async fn kokoros_reachable() -> bool {
-    is_kokoros_up().await
+async fn download_model(
+    app: AppHandle,
+    state: State<'_, DownloadState>,
+) -> Result<(), String> {
+    downloads::download_model(app, state).await
 }
 
-fn resolve_koko_binary() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("KOKOROS_BINARY") {
-        let path = PathBuf::from(p);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let default = PathBuf::from(home).join("dev/Kokoros/target/release/koko");
-        if default.exists() {
-            return Some(default);
-        }
-    }
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join("koko");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+#[tauri::command]
+async fn cancel_download(state: State<'_, DownloadState>) -> Result<(), String> {
+    downloads::cancel_download(state)
+}
+
+#[tauri::command]
+async fn start_kokoros(
+    app: AppHandle,
+    child_state: State<'_, KokorosChild>,
+    port_state: State<'_, KokorosPort>,
+) -> Result<StartResult, String> {
+    kokoros::start_kokoros(app, child_state, port_state).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .manage(PlaybackPid(Mutex::new(None)))
-        .manage(KokorosProcess(Mutex::new(None)))
+        .manage(KokorosChild(Mutex::new(None)))
+        .manage(KokorosPort(Mutex::new(None)))
+        .manage(DownloadState::new())
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if is_kokoros_up().await {
-                    eprintln!("[yap-box] Kokoros already running — attaching");
-                    return;
-                }
-                let Some(binary) = resolve_koko_binary() else {
-                    eprintln!(
-                        "[yap-box] no koko binary found (set KOKOROS_BINARY, install to PATH, or put at ~/dev/Kokoros/target/release/koko)"
-                    );
-                    return;
-                };
-                match tokio::process::Command::new(&binary)
-                    .arg("openai")
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .spawn()
-                {
-                    Ok(child) => {
-                        eprintln!(
-                            "[yap-box] spawned Kokoros from {} (pid {:?})",
-                            binary.display(),
-                            child.id()
-                        );
-                        if let Some(state) = handle.try_state::<KokorosProcess>() {
-                            if let Ok(mut guard) = state.0.lock() {
-                                *guard = Some(child);
-                            }
-                        }
-                    }
-                    Err(e) => eprintln!(
-                        "[yap-box] failed to spawn {}: {e}",
-                        binary.display()
-                    ),
-                }
+                downloads::cleanup_partials(&handle).await;
             });
             Ok(())
         })
@@ -252,25 +215,18 @@ pub fn run() {
             speak,
             stop,
             read_file,
-            kokoros_reachable,
-            list_voices
+            list_voices,
+            model_status,
+            download_model,
+            cancel_download,
+            start_kokoros,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
-            if let Some(state) = app_handle.try_state::<KokorosProcess>() {
-                let child_opt = state.0.lock().ok().and_then(|mut g| g.take());
-                if let Some(child) = child_opt {
-                    if let Some(pid) = child.id() {
-                        use nix::sys::signal::{kill, Signal};
-                        use nix::unistd::Pid;
-                        let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
-                        eprintln!("[yap-box] stopped Kokoros (pid {pid})");
-                    }
-                }
-            }
+            kokoros::shutdown(app_handle);
         }
     });
 }
