@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "yap-box",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.yapbox.app",
   "build": {
     "frontendDist": "../dist",
@@ -16,7 +16,8 @@
     "copyright": "Copyright © 2026 Christian Alexa",
     "macOS": { "minimumSystemVersion": "11.0" },
     "icon": ["icons/icon.icns"],
-    "externalBin": ["binaries/koko"]
+    "externalBin": ["binaries/koko"],
+    "resources": ["resources/espeak-ng-data/**/*"]
   },
   "app": {
     "windows": [

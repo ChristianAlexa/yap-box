@@ -1,6 +1,6 @@
 [package]
 name = "yap-box"
-version = "0.1.1"
+version = "0.1.2"
 description = "Drop text in, hear it spoken"
 authors = ["Christian Alexa"]
 license = "MIT"

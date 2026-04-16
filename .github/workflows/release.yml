@@ -84,6 +84,24 @@ jobs:
             src-tauri/binaries/koko-aarch64-apple-darwin
           codesign --verify --verbose src-tauri/binaries/koko-aarch64-apple-darwin
 
+      - name: Stage espeak-ng data for bundling
+        # espeak-rs-sys compiles espeak-ng and hardcodes its OUT_DIR data path
+        # into the binary. That path only exists on the CI runner, so a
+        # DMG-installed koko can't find its phoneme tables on a user's Mac.
+        # Copy the data into the Tauri resources dir so it rides along with
+        # the app; kokoros.rs sets ESPEAK_DATA_PATH at spawn time.
+        run: |
+          set -euo pipefail
+          SRC=$(ls -d kokoros-src/target/aarch64-apple-darwin/release/build/espeak-rs-sys-*/out/share/espeak-ng-data | head -n1)
+          if [ -z "$SRC" ] || [ ! -f "$SRC/phontab" ]; then
+            echo "::error::espeak-ng-data not found under espeak-rs-sys build tree"
+            exit 1
+          fi
+          mkdir -p src-tauri/resources
+          rm -rf src-tauri/resources/espeak-ng-data
+          cp -R "$SRC" src-tauri/resources/espeak-ng-data
+          test -f src-tauri/resources/espeak-ng-data/phontab
+
       - name: Install frontend deps
         run: npm ci
 

@@ -1,0 +1,4 @@
+Placeholder so Tauri's resource glob matches during dev and CI
+before the release workflow populates espeak-ng-data from the
+Kokoros build tree. Runtime code in kokoros.rs only sets
+ESPEAK_DATA_PATH when phontab is present, so an empty dir is safe.

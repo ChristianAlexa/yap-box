@@ -51,21 +51,35 @@ pub async fn start_kokoros(
 
     let port = allocate_port()?;
 
-    let sidecar = app
+    let mut sidecar = app
         .shell()
         .sidecar("koko")
-        .map_err(|e| format!("sidecar lookup: {e}"))?
-        .args([
-            "-m",
-            &onnx.to_string_lossy(),
-            "-d",
-            &voices.to_string_lossy(),
-            "openai",
-            "--ip",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-        ]);
+        .map_err(|e| format!("sidecar lookup: {e}"))?;
+
+    // espeak-rs-sys bakes its build-time OUT_DIR into the binary, so a
+    // CI-built koko looks for phoneme data at a path that only exists on
+    // the runner. When we've bundled espeak-ng-data as a Tauri resource,
+    // point koko at it via ESPEAK_DATA_PATH. In dev, this directory isn't
+    // staged — skip the override and let the locally-built koko use its
+    // compiled-in path, which already resolves on the dev machine.
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let espeak_data = resource_dir.join("resources").join("espeak-ng-data");
+        if espeak_data.join("phontab").exists() {
+            sidecar = sidecar.env("ESPEAK_DATA_PATH", espeak_data);
+        }
+    }
+
+    let sidecar = sidecar.args([
+        "-m",
+        &onnx.to_string_lossy(),
+        "-d",
+        &voices.to_string_lossy(),
+        "openai",
+        "--ip",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+    ]);
 
     let (mut rx, child) = sidecar.spawn().map_err(|e| format!("spawn koko: {e}"))?;
 
