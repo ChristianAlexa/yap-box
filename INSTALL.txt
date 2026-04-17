@@ -1,0 +1,21 @@
+yap-box — Install
+
+Requires an Apple Silicon Mac (M1/M2/M3/M4).
+
+1. Drag yap-box.app to the Applications folder (shortcut included in this DMG).
+
+2. Clear the macOS quarantine flag so Gatekeeper stops blocking the unsigned
+   build. Open Terminal and run:
+
+       xattr -dr com.apple.quarantine /Applications/yap-box.app
+
+   Alternative without a terminal: right-click yap-box.app -> Open -> Open
+   in the warning dialog. On macOS 15 (Sequoia) right-click-Open may not
+   bypass Gatekeeper -- open System Settings -> Privacy & Security and click
+   "Open Anyway" next to the blocked-app message.
+
+3. On first launch, yap-box prompts you to download the Kokoro-82M TTS model
+   (~354 MB). No bytes are fetched until you click Download in the dialog.
+
+Troubleshooting and full docs:
+https://github.com/ChristianAlexa/yap-box#readme

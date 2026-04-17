@@ -130,6 +130,7 @@ jobs:
           DMG_PATH="yap-box_${VERSION}_aarch64.dmg"
           mkdir -p "$DMG_DIR"
           cp -R "$APP_PATH" "$DMG_DIR/"
+          cp INSTALL.txt "$DMG_DIR/INSTALL.txt"
           ln -s /Applications "$DMG_DIR/Applications"
           hdiutil create -volname "yap-box" \
             -srcfolder "$DMG_DIR" \
@@ -145,10 +146,15 @@ jobs:
           draft: true
           prerelease: false
           body: |
-            Unsigned macOS arm64 build (ad-hoc signed).
+            Unsigned macOS arm64 build (ad-hoc signed). See `INSTALL.txt` inside the DMG for the full steps.
 
-            **First launch:** right-click `yap-box.app` → Open → Open.
-            If blocked on macOS 15+: System Settings → Privacy & Security → Open Anyway.
+            **Install:**
+            1. Drag `yap-box.app` to `/Applications`.
+            2. Clear the quarantine flag so Gatekeeper stops blocking it:
+               ```
+               xattr -dr com.apple.quarantine /Applications/yap-box.app
+               ```
+               Or, without a terminal: right-click `yap-box.app` → Open → Open. If blocked on macOS 15+: System Settings → Privacy & Security → Open Anyway.
 
             On first launch the app will prompt you to download the Kokoro-82M TTS model (~354 MB). No bytes are fetched until you confirm.
           files: |
