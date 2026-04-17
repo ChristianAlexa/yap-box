@@ -5,23 +5,23 @@ mod strip;
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use downloads::{DownloadState, ModelStatus};
 use kokoros::{KokorosChild, KokorosPort, StartResult};
 
 pub struct Playback {
     pub pid: Mutex<Option<u32>>,
-    pub stopped: AtomicBool,
+    pub stopped: Arc<AtomicBool>,
 }
 
 impl Playback {
     fn new() -> Self {
         Self {
             pid: Mutex::new(None),
-            stopped: AtomicBool::new(false),
+            stopped: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -44,6 +44,7 @@ fn kokoros_base_url(port_state: &State<'_, KokorosPort>) -> Option<String> {
 
 #[tauri::command]
 async fn speak(
+    app: AppHandle,
     text: String,
     voice: Option<String>,
     state: State<'_, Playback>,
@@ -56,63 +57,152 @@ async fn speak(
 
     state.stopped.store(false, Ordering::SeqCst);
 
+    let chunks = chunk_text(&input);
+    let total = chunks.len();
+    let _ = app.emit("speak-progress", serde_json::json!({ "done": 0, "total": total }));
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| format!("http client build: {e}"))?;
-    let resp = client
-        .post(format!("{base}/v1/audio/speech"))
-        .json(&serde_json::json!({
-            "model": "tts-1",
-            "voice": chosen_voice,
-            "input": input,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Kokoros unreachable: {e}"))?;
 
-    if !resp.status().is_success() {
-        return Err(format!("Kokoros returned HTTP {}", resp.status()));
-    }
+    // Producer: synthesizes chunks, pushes audio bytes downstream.
+    // Channel cap 1 keeps producer at most one chunk ahead of the player.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<(usize, Vec<u8>), String>>(1);
+    let stopped_flag = state.stopped.clone();
+    let producer_client = client.clone();
+    let producer_base = base.clone();
+    let producer_voice = chosen_voice.clone();
+    let producer_chunks = chunks.clone();
 
-    let bytes = resp.bytes().await.map_err(|e| format!("Failed to read audio: {e}"))?;
-
-    let temp_path = format!("/tmp/yap_box_{}.wav", std::process::id());
-    tokio::fs::write(&temp_path, &bytes)
-        .await
-        .map_err(|e| format!("Failed to write temp file: {e}"))?;
+    let producer = tokio::spawn(async move {
+        for (i, chunk) in producer_chunks.iter().enumerate() {
+            if stopped_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            let resp = match producer_client
+                .post(format!("{}/v1/audio/speech", producer_base))
+                .json(&serde_json::json!({
+                    "model": "tts-1",
+                    "voice": producer_voice,
+                    "input": chunk,
+                }))
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Kokoros unreachable: {e}"))).await;
+                    return;
+                }
+            };
+            if !resp.status().is_success() {
+                let _ = tx
+                    .send(Err(format!("Kokoros returned HTTP {}", resp.status())))
+                    .await;
+                return;
+            }
+            let bytes = match resp.bytes().await {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = tx
+                        .send(Err(format!("Failed to read audio: {e}")))
+                        .await;
+                    return;
+                }
+            };
+            if stopped_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            if tx.send(Ok((i, bytes.to_vec()))).await.is_err() {
+                return; // consumer dropped
+            }
+        }
+    });
 
     let start = Instant::now();
-    let mut child = match tokio::process::Command::new("afplay").arg(&temp_path).spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(format!("Failed to spawn afplay: {e}"));
-        }
-    };
+    let mut was_stopped = false;
+    let mut play_err: Option<String> = None;
 
-    let pid = child.id();
-    if let Some(pid) = pid {
+    while let Some(item) = rx.recv().await {
+        if state.stopped.load(Ordering::SeqCst) {
+            was_stopped = true;
+            break;
+        }
+        let (i, bytes) = match item {
+            Ok(x) => x,
+            Err(e) => {
+                play_err = Some(e);
+                break;
+            }
+        };
+
+        let temp_path = format!("/tmp/yap_box_{}_{}.wav", std::process::id(), i);
+        if let Err(e) = tokio::fs::write(&temp_path, &bytes).await {
+            play_err = Some(format!("Failed to write temp file: {e}"));
+            break;
+        }
+
+        let mut child = match tokio::process::Command::new("afplay").arg(&temp_path).spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                play_err = Some(format!("Failed to spawn afplay: {e}"));
+                break;
+            }
+        };
+
+        if let Some(pid) = child.id() {
+            if let Ok(mut guard) = state.pid.lock() {
+                *guard = Some(pid);
+            }
+        }
+
+        let wait_result = child.wait().await;
+
         if let Ok(mut guard) = state.pid.lock() {
-            *guard = Some(pid);
+            *guard = None;
+        }
+
+        let _ = tokio::fs::remove_file(&temp_path).await;
+
+        let status = match wait_result {
+            Ok(s) => s,
+            Err(e) => {
+                play_err = Some(format!("Failed to wait for afplay: {e}"));
+                break;
+            }
+        };
+
+        if state.stopped.load(Ordering::SeqCst) {
+            was_stopped = true;
+            break;
+        }
+
+        if !status.success() {
+            play_err = Some(format!("afplay exited with {:?}", status.code()));
+            break;
+        }
+
+        let _ = app.emit(
+            "speak-progress",
+            serde_json::json!({ "done": i + 1, "total": total }),
+        );
+    }
+
+    drop(rx);
+    let _ = producer.await;
+    state.stopped.store(false, Ordering::SeqCst);
+
+    if let Some(e) = play_err {
+        if was_stopped {
+            // Stop won the race; treat as clean stop, not error.
+        } else {
+            return Err(e);
         }
     }
 
-    let wait_result = child.wait().await;
-
-    if let Ok(mut guard) = state.pid.lock() {
-        *guard = None;
-    }
-
-    let _ = tokio::fs::remove_file(&temp_path).await;
-
-    let status = wait_result.map_err(|e| format!("Failed to wait for afplay: {e}"))?;
     let duration_ms = start.elapsed().as_millis() as u64;
-    let was_stopped = state.stopped.swap(false, Ordering::SeqCst);
-
-    if !status.success() && !was_stopped {
-        return Err(format!("afplay exited with {:?}", status.code()));
-    }
 
     Ok(SpeakResult {
         duration_ms,
@@ -121,14 +211,71 @@ async fn speak(
     })
 }
 
+const MIN_CHUNK: usize = 80;
+const MAX_CHUNK: usize = 500;
+
+fn chunk_text(input: &str) -> Vec<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sentences: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        current.push(c);
+        let is_terminator = matches!(c, '.' | '!' | '?' | '\n');
+        let next_is_space_or_end = i + 1 >= chars.len() || chars[i + 1].is_whitespace();
+        if is_terminator && next_is_space_or_end {
+            let s = current.trim().to_string();
+            if !s.is_empty() {
+                sentences.push(s);
+            }
+            current.clear();
+        }
+        i += 1;
+    }
+    let tail = current.trim().to_string();
+    if !tail.is_empty() {
+        sentences.push(tail);
+    }
+
+    let mut chunks: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    for s in sentences {
+        if buf.is_empty() {
+            buf = s;
+        } else if buf.len() + 1 + s.len() <= MAX_CHUNK && buf.len() < MIN_CHUNK {
+            buf.push(' ');
+            buf.push_str(&s);
+        } else if buf.len() < MIN_CHUNK && buf.len() + 1 + s.len() <= MAX_CHUNK * 2 {
+            buf.push(' ');
+            buf.push_str(&s);
+        } else {
+            chunks.push(std::mem::take(&mut buf));
+            buf = s;
+        }
+    }
+    if !buf.is_empty() {
+        chunks.push(buf);
+    }
+
+    if chunks.is_empty() {
+        chunks.push(trimmed.to_string());
+    }
+    chunks
+}
+
 #[tauri::command]
 async fn stop(state: State<'_, Playback>) -> Result<(), String> {
+    // Set the flag unconditionally so a Stop pressed mid-synthesis
+    // (no afplay alive yet) still aborts the producer + consumer.
+    state.stopped.store(true, Ordering::SeqCst);
     let pid_opt = state.pid.lock().ok().and_then(|g| *g);
     if let Some(pid) = pid_opt {
-        // Set stopped before SIGTERM so the speak() task, which may wake up
-        // the instant afplay dies, sees the flag and reports a clean stop
-        // rather than an error.
-        state.stopped.store(true, Ordering::SeqCst);
         use nix::sys::signal::{kill, Signal};
         use nix::unistd::Pid;
         let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);

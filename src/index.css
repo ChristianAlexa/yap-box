@@ -216,3 +216,31 @@ button:disabled {
   background: #4a9eff;
   transition: width 0.2s ease;
 }
+
+.yap-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+  color: #888;
+  font-size: 0.9rem;
+}
+
+.yap-status__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.yap-status__spinner {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  color: #4a9eff;
+  width: 1ch;
+  display: inline-block;
+  text-align: center;
+}
+
+.yap-status__label {
+  font-variant-numeric: tabular-nums;
+}

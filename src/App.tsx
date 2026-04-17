@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { ModelDownload } from './components/ModelDownload'
+import { useSpinner } from './hooks/useSpinner'
 
 interface SpeakResult {
   duration_ms: number
@@ -31,6 +32,17 @@ function App() {
   const [selectedVoice, setSelectedVoice] = useState<string>(
     () => localStorage.getItem('yap-box-voice') ?? 'af_heart',
   )
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
+  const spinnerFrame = useSpinner(speaking)
+
+  useEffect(() => {
+    const unlisten = listen<{ done: number; total: number }>('speak-progress', (event) => {
+      setProgress(event.payload)
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -107,6 +119,7 @@ function App() {
     if (!text.trim() || speaking) return
     setSpeaking(true)
     setError(null)
+    setProgress(null)
     try {
       const result = await invoke<SpeakResult>('speak', { text, voice: selectedVoice })
       if (!result.stopped) {
@@ -116,6 +129,7 @@ function App() {
       setError(`${err}`)
     } finally {
       setSpeaking(false)
+      setProgress(null)
     }
   }
 
@@ -229,6 +243,24 @@ function App() {
         placeholder="Paste text here or drag a file onto this window..."
         rows={12}
       />
+      {speaking && progress && progress.total > 0 && (
+        <div className="yap-status" aria-live="polite">
+          <div className="yap-status__row">
+            <span className="yap-status__spinner" aria-hidden="true">
+              {spinnerFrame}
+            </span>
+            <span className="yap-status__label">
+              Yapping… {progress.done} of {progress.total}
+            </span>
+          </div>
+          <div className="progress">
+            <div
+              className="progress__bar"
+              style={{ width: `${(progress.done / progress.total) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
       {speaking ? (
         <button onClick={handleStop} className="button--stop">
           Stop
