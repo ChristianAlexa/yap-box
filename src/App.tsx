@@ -250,7 +250,7 @@ function App() {
               {spinnerFrame}
             </span>
             <span className="yap-status__label">
-              Yapping… {progress.done} of {progress.total}
+              Yapping… {Math.min(progress.total, Math.floor(progress.done) + 1)} of {progress.total}
             </span>
           </div>
           <div className="progress">

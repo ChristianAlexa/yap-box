@@ -19,8 +19,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri = { version = "2.10.0", features = [] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
-tokio = { version = "1", features = ["process", "fs", "io-util", "time"] }
-nix = { version = "0.29", features = ["signal"] }
+tokio = { version = "1", features = ["fs", "io-util", "time"] }
+rodio = { version = "0.22", default-features = false, features = ["wav", "playback"] }
 regex = "1"
 tauri-plugin-shell = "2"
 futures-util = "0.3"
