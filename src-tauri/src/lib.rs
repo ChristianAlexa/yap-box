@@ -153,7 +153,7 @@ async fn speak(
                 return;
             }
             let resp = match producer_client
-                .post(format!("{}/v1/audio/speech", producer_base))
+                .post(format!("{producer_base}/v1/audio/speech"))
                 .json(&serde_json::json!({
                     "model": "tts-1",
                     "voice": producer_voice,
@@ -440,9 +440,6 @@ fn chunk_text(input: &str) -> Vec<String> {
     for s in sentences {
         if buf.is_empty() {
             buf = s;
-        } else if buf.len() + 1 + s.len() <= MAX_CHUNK && buf.len() < MIN_CHUNK {
-            buf.push(' ');
-            buf.push_str(&s);
         } else if buf.len() < MIN_CHUNK && buf.len() + 1 + s.len() <= MAX_CHUNK * 2 {
             buf.push(' ');
             buf.push_str(&s);
@@ -503,7 +500,7 @@ async fn preview_voice(
                 .build()
                 .map_err(|e| format!("http client build: {e}"))?;
             let resp = client
-                .post(format!("{}/v1/audio/speech", base))
+                .post(format!("{base}/v1/audio/speech"))
                 .json(&serde_json::json!({
                     "model": "tts-1",
                     "voice": voice,
