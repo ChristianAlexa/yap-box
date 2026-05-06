@@ -124,6 +124,21 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.button-row {
+  display: flex;
+  gap: 8px;
+}
+
+.preview-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.button-row > button {
+  flex: 1;
+}
+
 .button--stop {
   background: #ef4444;
 }
@@ -243,4 +258,143 @@ button:disabled {
 
 .yap-status__label {
   font-variant-numeric: tabular-nums;
+}
+
+.icon-button {
+  padding: 4px 8px;
+  font-size: 16px;
+  line-height: 1;
+  background: transparent;
+  color: #bbb;
+  border: 1px solid transparent;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: #2a2a2a;
+  color: #fff;
+}
+
+.settings {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.settings__topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+}
+
+.settings__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.settings__body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  border: 1px solid #333;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.settings__sidebar {
+  width: 80px;
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+  border-right: 1px solid #333;
+}
+
+.settings__tab {
+  background: transparent;
+  border: none;
+  border-left: 3px solid transparent;
+  border-radius: 0;
+  padding: 8px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: #bbb;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.settings__tab:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+}
+
+.settings__tab--active {
+  background: rgba(74, 158, 255, 0.12);
+  color: #fff;
+  border-left-color: #4a9eff;
+}
+
+.settings__tab-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.settings__tab-label {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.settings__pane {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.pane__heading {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 12px;
+}
+
+.pane__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pane__help {
+  font-size: 12px;
+  color: #888;
+  margin-top: 4px;
+}
+
+.pane__meta {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 4px;
+}
+
+.pane__links {
+  list-style: none;
+  margin-top: 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pane__links a {
+  color: #4a9eff;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.pane__links a:hover {
+  text-decoration: underline;
 }

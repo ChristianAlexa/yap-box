@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { ModelDownload } from './components/ModelDownload'
+import { Settings } from './components/Settings'
 import { useSpinner } from './hooks/useSpinner'
 
 interface SpeakResult {
@@ -27,6 +28,9 @@ function App() {
   const [gate, setGate] = useState<Gate>({ kind: 'loading' })
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
+  const [paused, setPaused] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [voices, setVoices] = useState<string[]>([])
   const [selectedVoice, setSelectedVoice] = useState<string>(
@@ -129,6 +133,7 @@ function App() {
       setError(`${err}`)
     } finally {
       setSpeaking(false)
+      setPaused(false)
       setProgress(null)
     }
   }
@@ -136,6 +141,33 @@ function App() {
   async function handleStop() {
     try {
       await invoke('stop')
+    } catch {
+      // best-effort
+    }
+  }
+
+  async function handlePreview() {
+    if (previewing || speaking) return
+    setPreviewing(true)
+    setError(null)
+    try {
+      await invoke('preview_voice', { voice: selectedVoice })
+    } catch (err) {
+      setError(`${err}`)
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  async function handlePauseToggle() {
+    try {
+      if (paused) {
+        await invoke('resume')
+        setPaused(false)
+      } else {
+        await invoke('pause')
+        setPaused(true)
+      }
     } catch {
       // best-effort
     }
@@ -208,27 +240,36 @@ function App() {
     )
   }
 
+  if (settingsOpen) {
+    return (
+      <div className="container">
+        <Settings
+          voices={voices}
+          selectedVoice={selectedVoice}
+          setSelectedVoice={setSelectedVoice}
+          speaking={speaking}
+          previewing={previewing}
+          onPreview={handlePreview}
+          engineConnected={gate.kind === 'ready'}
+          onClose={() => setSettingsOpen(false)}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="container">
       <header className="header">
         <h1>yap-box</h1>
         <div className="header__right">
-          <select
-            className="voice-select"
-            value={selectedVoice}
-            onChange={(e) => setSelectedVoice(e.target.value)}
-            aria-label="Voice"
+          <button
+            className="icon-button"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Settings"
+            title="Settings"
           >
-            {(voices.length > 0 ? voices : [selectedVoice]).map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </select>
-          <div className="status status--up" title="Kokoros connected">
-            <span className="status__dot" />
-            <span className="status__label">Kokoros connected</span>
-          </div>
+            ⚙
+          </button>
         </div>
       </header>
       <textarea
@@ -262,9 +303,14 @@ function App() {
         </div>
       )}
       {speaking ? (
-        <button onClick={handleStop} className="button--stop">
-          Stop
-        </button>
+        <div className="button-row">
+          <button onClick={handlePauseToggle}>
+            {paused ? 'Resume' : 'Pause'}
+          </button>
+          <button onClick={handleStop} className="button--stop">
+            Stop
+          </button>
+        </div>
       ) : (
         <button onClick={handleYap} disabled={!text.trim()}>
           Yap

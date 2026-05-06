@@ -4,10 +4,12 @@ mod paths;
 mod strip;
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use rodio::Source;
+use rodio::buffer::SamplesBuffer;
 use tauri::{AppHandle, Emitter, State};
 
 use downloads::{DownloadState, ModelStatus};
@@ -24,6 +26,22 @@ impl Playback {
             sink: Mutex::new(None),
             stopped: Arc::new(AtomicBool::new(false)),
         }
+    }
+}
+
+const PREVIEW_TEXT: &str = "The quick brown fox jumps over the lazy dog.";
+
+struct PreviewEntry {
+    channels: rodio::ChannelCount,
+    sample_rate: rodio::SampleRate,
+    samples: Vec<f32>,
+}
+
+pub struct PreviewCache(Mutex<HashMap<String, PreviewEntry>>);
+
+impl PreviewCache {
+    fn new() -> Self {
+        Self(Mutex::new(HashMap::new()))
     }
 }
 
@@ -118,8 +136,11 @@ async fn speak(
         .map_err(|e| format!("http client build: {e}"))?;
 
     // Producer: synthesizes chunks, pushes audio bytes downstream.
-    // Channel cap 1 keeps producer at most one chunk ahead of the consumer's decode+append.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, String>>(1);
+    // Channel cap 2 + sink-length gate below give a shallow lookahead buffer (~3-4 chunks)
+    // so synthesis latency between chunks doesn't cause gaps in playback, while still
+    // streaming on the fly rather than processing the whole text upfront.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, String>>(2);
+    const MAX_SINK_LOOKAHEAD: usize = 2;
     let stopped_flag = state.stopped.clone();
     let producer_client = client.clone();
     let producer_base = base.clone();
@@ -247,7 +268,6 @@ async fn speak(
                 break;
             }
         };
-        let header_dur = wav_duration(&bytes);
         let decoder = match rodio::Decoder::try_from(std::io::Cursor::new(bytes)) {
             Ok(d) => d,
             Err(e) => {
@@ -255,11 +275,28 @@ async fn speak(
                 break;
             }
         };
-        let dur = header_dur.or_else(|| decoder.total_duration());
+        let channels = decoder.channels();
+        let sample_rate = decoder.sample_rate();
+        let samples: Vec<f32> = decoder.collect();
+        let trimmed = trim_silence(samples, channels, sample_rate);
+        let frames = trimmed.len() / (channels.get() as usize).max(1);
+        let dur = Some(Duration::from_secs_f64(
+            frames as f64 / sample_rate.get() as f64,
+        ));
+        // Backpressure: don't append if the sink already has enough lookahead queued.
+        // This caps how far ahead we run during normal playback and prevents racing
+        // ahead while paused.
+        while sink.len() >= MAX_SINK_LOOKAHEAD && !state.stopped.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if state.stopped.load(Ordering::SeqCst) {
+            was_stopped = true;
+            break;
+        }
         if let Ok(mut v) = chunk_durations.lock() {
             v.push(dur);
         }
-        sink.append(decoder);
+        sink.append(SamplesBuffer::new(channels, sample_rate, trimmed));
         appended.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -315,52 +352,58 @@ async fn speak(
     })
 }
 
-fn wav_duration(bytes: &[u8]) -> Option<Duration> {
-    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return None;
+fn trim_silence(
+    samples: Vec<f32>,
+    channels: rodio::ChannelCount,
+    sample_rate: rodio::SampleRate,
+) -> Vec<f32> {
+    const SILENCE_THRESHOLD: f32 = 0.005;
+    const KEEP_PAD_MS: usize = 15;
+    if samples.is_empty() {
+        return samples;
     }
-    let mut pos = 12;
-    let mut sample_rate: u32 = 0;
-    let mut channels: u16 = 0;
-    let mut bits: u16 = 0;
-    let mut data_size: Option<u32> = None;
-    while pos + 8 <= bytes.len() {
-        let id = &bytes[pos..pos + 4];
-        let size = u32::from_le_bytes([
-            bytes[pos + 4],
-            bytes[pos + 5],
-            bytes[pos + 6],
-            bytes[pos + 7],
-        ]) as usize;
-        let body = pos + 8;
-        if id == b"fmt " && body + 16 <= bytes.len() {
-            channels = u16::from_le_bytes([bytes[body + 2], bytes[body + 3]]);
-            sample_rate = u32::from_le_bytes([
-                bytes[body + 4],
-                bytes[body + 5],
-                bytes[body + 6],
-                bytes[body + 7],
-            ]);
-            bits = u16::from_le_bytes([bytes[body + 14], bytes[body + 15]]);
-        } else if id == b"data" {
-            data_size = Some(size as u32);
-            break;
-        }
-        pos = body + size;
+    let pad_frames = (sample_rate.get() as usize) * KEEP_PAD_MS / 1000;
+    let pad = pad_frames * channels.get() as usize;
+    let head = samples
+        .iter()
+        .position(|s| s.abs() > SILENCE_THRESHOLD)
+        .map(|i| i.saturating_sub(pad))
+        .unwrap_or(0);
+    let tail = samples
+        .iter()
+        .rposition(|s| s.abs() > SILENCE_THRESHOLD)
+        .map(|i| (i + 1 + pad).min(samples.len()))
+        .unwrap_or(samples.len());
+    if head < tail {
+        samples[head..tail].to_vec()
+    } else {
+        samples
     }
-    let ds = data_size? as u64;
-    if sample_rate == 0 || channels == 0 || bits == 0 {
-        return None;
-    }
-    let bytes_per_sec = sample_rate as u64 * channels as u64 * (bits as u64 / 8);
-    if bytes_per_sec == 0 {
-        return None;
-    }
-    Some(Duration::from_secs_f64(ds as f64 / bytes_per_sec as f64))
 }
 
-const MIN_CHUNK: usize = 80;
-const MAX_CHUNK: usize = 500;
+const MIN_CHUNK: usize = 160;
+const MAX_CHUNK: usize = 700;
+
+const ABBREVS: &[&str] = &[
+    "mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "eg", "ie", "no", "fig",
+];
+
+fn ends_with_abbrev(buf: &str) -> bool {
+    let last = buf
+        .rsplit(|c: char| c.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('.');
+    let lower: String = last
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    if lower.is_empty() {
+        return false;
+    }
+    ABBREVS.iter().any(|a| *a == lower)
+}
 
 fn chunk_text(input: &str) -> Vec<String> {
     let trimmed = input.trim();
@@ -377,7 +420,8 @@ fn chunk_text(input: &str) -> Vec<String> {
         current.push(c);
         let is_terminator = matches!(c, '.' | '!' | '?' | '\n');
         let next_is_space_or_end = i + 1 >= chars.len() || chars[i + 1].is_whitespace();
-        if is_terminator && next_is_space_or_end {
+        let blocked_by_abbrev = c == '.' && ends_with_abbrev(&current);
+        if is_terminator && next_is_space_or_end && !blocked_by_abbrev {
             let s = current.trim().to_string();
             if !s.is_empty() {
                 sentences.push(s);
@@ -418,6 +462,108 @@ fn chunk_text(input: &str) -> Vec<String> {
 }
 
 #[tauri::command]
+async fn pause(state: State<'_, Playback>) -> Result<(), String> {
+    let sink_opt = state.sink.lock().ok().and_then(|g| g.clone());
+    if let Some(sink) = sink_opt {
+        sink.pause();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume(state: State<'_, Playback>) -> Result<(), String> {
+    let sink_opt = state.sink.lock().ok().and_then(|g| g.clone());
+    if let Some(sink) = sink_opt {
+        sink.play();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn preview_voice(
+    voice: String,
+    cache: State<'_, PreviewCache>,
+    port_state: State<'_, KokorosPort>,
+) -> Result<(), String> {
+    let cached = cache
+        .0
+        .lock()
+        .ok()
+        .and_then(|m| {
+            m.get(&voice)
+                .map(|e| (e.channels, e.sample_rate, e.samples.clone()))
+        });
+
+    let (channels, sample_rate, samples) = match cached {
+        Some(t) => t,
+        None => {
+            let base = kokoros_base_url(&port_state).ok_or("Kokoros not started")?;
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .map_err(|e| format!("http client build: {e}"))?;
+            let resp = client
+                .post(format!("{}/v1/audio/speech", base))
+                .json(&serde_json::json!({
+                    "model": "tts-1",
+                    "voice": voice,
+                    "input": PREVIEW_TEXT,
+                    "response_format": "wav",
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("Kokoros unreachable: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("Kokoros returned HTTP {}", resp.status()));
+            }
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read audio: {e}"))?;
+            let decoder = rodio::Decoder::try_from(std::io::Cursor::new(bytes.to_vec()))
+                .map_err(|e| format!("wav decode: {e}"))?;
+            let channels = decoder.channels();
+            let sample_rate = decoder.sample_rate();
+            let raw: Vec<f32> = decoder.collect();
+            let trimmed = trim_silence(raw, channels, sample_rate);
+            if let Ok(mut m) = cache.0.lock() {
+                m.insert(
+                    voice.clone(),
+                    PreviewEntry {
+                        channels,
+                        sample_rate,
+                        samples: trimmed.clone(),
+                    },
+                );
+            }
+            (channels, sample_rate, trimmed)
+        }
+    };
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut handle = match rodio::DeviceSinkBuilder::open_default_sink() {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = done_tx.send(());
+                return;
+            }
+        };
+        handle.log_on_drop(false);
+        let player = rodio::Player::connect_new(handle.mixer());
+        player.append(SamplesBuffer::new(channels, sample_rate, samples));
+        while player.len() > 0 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(player);
+        drop(handle);
+        let _ = done_tx.send(());
+    });
+    let _ = done_rx.await;
+    Ok(())
+}
+
+#[tauri::command]
 async fn stop(state: State<'_, Playback>) -> Result<(), String> {
     // Set the flag unconditionally so a Stop pressed mid-synthesis
     // (no sink yet) still aborts the producer + consumer.
@@ -449,21 +595,38 @@ async fn list_voices(port_state: State<'_, KokorosPort>) -> Result<Vec<String>, 
     };
     match client.get(format!("{base}/v1/audio/voices")).send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<VoicesResponse>().await {
-            Ok(v) if !v.voices.is_empty() => Ok(v.voices),
+            Ok(v) if !v.voices.is_empty() => {
+                let filtered: Vec<String> =
+                    v.voices.into_iter().filter(|v| is_us_voice(v)).collect();
+                if filtered.is_empty() {
+                    Ok(fallback_voices())
+                } else {
+                    Ok(filtered)
+                }
+            }
             _ => Ok(fallback_voices()),
         },
         _ => Ok(fallback_voices()),
     }
 }
 
+// Kokoros voice IDs use a two-char prefix: lang+gender, then '_'.
+// 'a' = American English, 'b' = British, 'z' = Mandarin, etc. Keep American
+// language-prefixed voices, plus any voice without a language prefix
+// (OpenAI-style names like "ballad", "alloy").
+fn is_us_voice(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.len() >= 3 && bytes[2] == b'_' {
+        return bytes[0] == b'a';
+    }
+    true
+}
+
 fn fallback_voices() -> Vec<String> {
-    vec![
-        "af_heart", "af_bella", "af_nicole", "af_sky", "am_adam", "am_michael", "bf_emma",
-        "bf_isabella", "bm_george", "bm_lewis",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect()
+    vec!["af_heart", "af_bella", "af_nicole", "af_sky", "am_adam", "am_michael"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 #[tauri::command]
@@ -523,6 +686,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(Playback::new())
+        .manage(PreviewCache::new())
         .manage(KokorosChild(Mutex::new(None)))
         .manage(KokorosPort(Mutex::new(None)))
         .manage(DownloadState::new())
@@ -536,6 +700,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             speak,
             stop,
+            pause,
+            resume,
+            preview_voice,
             read_file,
             list_voices,
             model_status,
