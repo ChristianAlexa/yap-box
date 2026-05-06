@@ -36,12 +36,7 @@ export function Settings(props: SettingsProps) {
   return (
     <div className="settings">
       <div className="settings__topbar">
-        <button
-          className="icon-button"
-          onClick={props.onClose}
-          aria-label="Back"
-          title="Back"
-        >
+        <button className="icon-button" onClick={props.onClose} aria-label="Back" title="Back">
           ←
         </button>
         <span className="settings__title">Settings</span>
@@ -51,10 +46,7 @@ export function Settings(props: SettingsProps) {
           {tabs.map((t) => (
             <button
               key={t.id}
-              className={
-                'settings__tab' +
-                (selected === t.id ? ' settings__tab--active' : '')
-              }
+              className={'settings__tab' + (selected === t.id ? ' settings__tab--active' : '')}
               onClick={() => setSelected(t.id)}
             >
               <span className="settings__tab-icon" aria-hidden="true">
@@ -66,9 +58,7 @@ export function Settings(props: SettingsProps) {
         </nav>
         <div className="settings__pane">
           {selected === 'voice' && <VoicePane {...props} />}
-          {selected === 'engine' && (
-            <EnginePane connected={props.engineConnected} />
-          )}
+          {selected === 'engine' && <EnginePane connected={props.engineConnected} />}
           {selected === 'about' && <AboutPane />}
         </div>
       </div>
@@ -110,9 +100,7 @@ function VoicePane({
           {previewing ? '…' : '▶'}
         </button>
       </div>
-      <p className="pane__help">
-        Voices are previewed with a short sample sentence.
-      </p>
+      <p className="pane__help">Voices are previewed with a short sample sentence.</p>
     </div>
   )
 }
@@ -121,19 +109,13 @@ function EnginePane({ connected }: { connected: boolean }) {
   return (
     <div className="pane">
       <h3 className="pane__heading">Engine</h3>
-      <div
-        className={
-          'status ' + (connected ? 'status--up' : 'status--down')
-        }
-      >
+      <div className={'status ' + (connected ? 'status--up' : 'status--down')}>
         <span className="status__dot" />
         <span className="status__label">
           {connected ? 'Kokoros connected' : 'Kokoros disconnected'}
         </span>
       </div>
-      <p className="pane__help">
-        The local TTS engine that synthesizes speech from your text.
-      </p>
+      <p className="pane__help">The local TTS engine that synthesizes speech from your text.</p>
     </div>
   )
 }
@@ -151,11 +133,7 @@ function AboutPane() {
           </a>
         </li>
         <li>
-          <a
-            href={`${REPO_URL}/blob/main/PRIVACY.md`}
-            target="_blank"
-            rel="noreferrer noopener"
-          >
+          <a href={`${REPO_URL}/blob/main/PRIVACY.md`} target="_blank" rel="noreferrer noopener">
             Privacy
           </a>
         </li>

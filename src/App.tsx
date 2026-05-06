@@ -304,9 +304,7 @@ function App() {
       )}
       {speaking ? (
         <div className="button-row">
-          <button onClick={handlePauseToggle}>
-            {paused ? 'Resume' : 'Pause'}
-          </button>
+          <button onClick={handlePauseToggle}>{paused ? 'Resume' : 'Pause'}</button>
           <button onClick={handleStop} className="button--stop">
             Stop
           </button>
